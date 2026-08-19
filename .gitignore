@@ -1,0 +1,62 @@
+# ==================================
+# STM32CubeMx + Keil MDK Project
+# ==================================
+
+# ----------------------------------
+# Keil/MDK build output
+# ----------------------------------
+
+# Object files
+*.o
+*.d
+
+# Dependency/build information
+*.dep
+*.lnp
+
+# Executable/debug output
+*.axf
+
+# Linker output
+*.map
+
+# HEX firmware image
+*.hex
+
+# Build reports / HTML output
+*.htm
+
+# Keil input/intermediate files
+*.inp
+
+# Keil external DLL configuration
+*.iex
+
+# ---------------------------------------
+# Keil user-specific/local configuration
+# ---------------------------------------
+MDK-ARM/DebugConfig/
+
+# Keil user option file
+*.uvoptx
+
+# Keil GUI/user state
+*.uvguix.*
+
+# Event Recorder
+# Generated Event Recorder stub
+MDK-ARM/EventRecorderStub.scvd
+
+# General temporary/backup files
+*.bak
+*.old
+*.tmp
+*.log
+
+# OS.editor temporary files
+# Windows
+Thumbs.db
+Desktop.ini
+
+# VS code
+.vscode/
