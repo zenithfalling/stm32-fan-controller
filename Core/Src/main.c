@@ -23,7 +23,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "math.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,6 +46,12 @@
 /* USER CODE BEGIN PV */
 // now TIM2 frequency is 25kHz, counter period 2880
 uint16_t duty_value = 287;
+// 
+uint16_t ccr_reg_01 = 0;
+uint16_t ccr_reg_02 = 0;
+uint16_t dif_val = 0;
+uint16_t fanspeed = 0;
+uint32_t freq_tim4 = 1e6;// TIM4 frequency is 1MHz
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -90,11 +96,14 @@ int main(void)
   MX_GPIO_Init();
   MX_TIM2_Init();
   MX_TIM3_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
   // start TIM2 PWM channel
   HAL_TIM_PWM_Start(&htim2,TIM_CHANNEL_1);
   // start TIM3
   HAL_TIM_Base_Start_IT(&htim3);
+  // start TIM4, monitor fan speed
+  HAL_TIM_IC_Start_IT(&htim4,TIM_CHANNEL_1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -163,6 +172,19 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
             duty_value += 144;
         }
         __HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1,duty_value);
+    }
+}
+// TIM4 interrupt function
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
+{
+    if(htim->Instance == TIM4)
+    {
+        ccr_reg_02 = (uint16_t)HAL_TIM_ReadCapturedValue(&htim4,TIM_CHANNEL_1);
+        dif_val = ccr_reg_02 - ccr_reg_01;
+        if(dif_val < 1000)
+            return;
+        fanspeed = (uint16_t)round(30 * freq_tim4 /dif_val);
+        ccr_reg_01 = ccr_reg_02;
     }
 }
 /* USER CODE END 4 */
