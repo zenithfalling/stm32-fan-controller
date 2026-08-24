@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "crc.h"
 #include "tim.h"
 #include "gpio.h"
 
@@ -28,7 +29,12 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+typedef struct{
+    uint8_t packageIndex;
+    uint16_t fanSpeed;
+    uint16_t targetSpeed;
+    uint32_t crcresult;
+}systemData_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -38,12 +44,15 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
+#define TX_BUFF_SIZE 12 //uart send data bytes
+#define UART_PERIOD 100 //uart send data period ms
+#define OLED_PERIOD 50 //spi oled send data period ms
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+extern CRC_HandleTypeDef hcrc;
 // now TIM2 frequency is 25kHz, counter period 2880
 uint16_t duty_value = 287;
 // 
@@ -52,12 +61,16 @@ uint16_t ccr_reg_02 = 0;
 uint16_t dif_val = 0;
 uint16_t fanspeed = 0;
 uint32_t freq_tim4 = 1e6;// TIM4 frequency is 1MHz
+systemData_t dataField = {
+    .packageIndex = 0
+};
+uint8_t g_tx_buffer[TX_BUFF_SIZE];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-
+void DataPackAndSend(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -97,6 +110,7 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM3_Init();
   MX_TIM4_Init();
+  MX_CRC_Init();
   /* USER CODE BEGIN 2 */
   // start TIM2 PWM channel
   HAL_TIM_PWM_Start(&htim2,TIM_CHANNEL_1);
@@ -183,10 +197,41 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
         dif_val = ccr_reg_02 - ccr_reg_01;
         if(dif_val < 1000)
             return;
-        fanspeed = (uint16_t)round(30 * freq_tim4 /dif_val);
+        dataField.fanSpeed = (uint16_t)round(30 * freq_tim4 /dif_val);
         ccr_reg_01 = ccr_reg_02;
     }
 }
+// data package and send function
+void DataPackAndSend(void)
+{
+    systemData_t localData;
+    uint32_t crcdata[2];
+    // close interrupt
+    uint32_t primask_bit = __get_PRIMASK();
+    __disable_irq();
+    localData = dataField;
+    //open interrupt
+    __set_PRIMASK(primask_bit);
+    //data package
+    g_tx_buffer[0] = 0x55;//frame header
+    g_tx_buffer[1] = 0xAA;//frame header
+    g_tx_buffer[2] = 10;//frame length except header
+    g_tx_buffer[3] = localData.packageIndex;//? to deal
+    g_tx_buffer[4] = (localData.fanSpeed >> 8) & 0xFF;
+    g_tx_buffer[5] = localData.fanSpeed & 0xFF;
+    g_tx_buffer[6] = (localData.targetSpeed >> 8) & 0xFF;
+    g_tx_buffer[7] = localData.targetSpeed & 0xFF;
+    //calculate crc
+    crcdata[0] = (g_tx_buffer[0] << 24) | (g_tx_buffer[1] << 16) | (g_tx_buffer[2] << 8) | g_tx_buffer[3];
+    crcdata[1] = (g_tx_buffer[4] << 24) | (g_tx_buffer[5] << 16) | (g_tx_buffer[6] << 8) | g_tx_buffer[7];
+    localData.crcresult = HAL_CRC_Calculate(&hcrc,crcdata,2);
+    g_tx_buffer[8] = (localData.crcresult >> 24) & 0xFF;
+    g_tx_buffer[9] = (localData.crcresult >> 16) & 0xFF;
+    g_tx_buffer[10] = (localData.crcresult >> 8) & 0xFF;
+    g_tx_buffer[11] = localData.crcresult & 0xFF;
+    //uart send g_tx_buffer
+}
+
 /* USER CODE END 4 */
 
 /**
