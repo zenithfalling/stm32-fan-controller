@@ -57,6 +57,12 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define functime_Pin GPIO_PIN_7
+#define functime_GPIO_Port GPIOF
+#define PWM_Pin GPIO_PIN_0
+#define PWM_GPIO_Port GPIOA
+#define speed_Pin GPIO_PIN_12
+#define speed_GPIO_Port GPIOD
 
 /* USER CODE BEGIN Private defines */
 

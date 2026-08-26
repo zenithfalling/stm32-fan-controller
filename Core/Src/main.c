@@ -19,7 +19,9 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "crc.h"
+#include "dma.h"
 #include "tim.h"
+#include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -62,9 +64,12 @@ uint16_t dif_val = 0;
 uint16_t fanspeed = 0;
 uint32_t freq_tim4 = 1e6;// TIM4 frequency is 1MHz
 systemData_t dataField = {
-    .packageIndex = 0
+    .packageIndex = 0,
+    .targetSpeed = 2500
 };
 uint8_t g_tx_buffer[TX_BUFF_SIZE];
+uint32_t last_send_time = 0;
+uint8_t status = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -107,10 +112,12 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_TIM2_Init();
   MX_TIM3_Init();
   MX_TIM4_Init();
   MX_CRC_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   // start TIM2 PWM channel
   HAL_TIM_PWM_Start(&htim2,TIM_CHANNEL_1);
@@ -118,12 +125,23 @@ int main(void)
   HAL_TIM_Base_Start_IT(&htim3);
   // start TIM4, monitor fan speed
   HAL_TIM_IC_Start_IT(&htim4,TIM_CHANNEL_1);
+  HAL_GPIO_WritePin(GPIOF,GPIO_PIN_7,GPIO_PIN_RESET);
+  last_send_time = HAL_GetTick();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+      if(HAL_GetTick() - last_send_time >= UART_PERIOD)
+      {
+          dataField.packageIndex++;
+          last_send_time = HAL_GetTick();
+          // use PF7 to measure function time
+          HAL_GPIO_WritePin(GPIOF,GPIO_PIN_7,GPIO_PIN_SET);
+          DataPackAndSend();
+          HAL_GPIO_WritePin(GPIOF,GPIO_PIN_7,GPIO_PIN_RESET);
+      }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -216,7 +234,7 @@ void DataPackAndSend(void)
     g_tx_buffer[0] = 0x55;//frame header
     g_tx_buffer[1] = 0xAA;//frame header
     g_tx_buffer[2] = 10;//frame length except header
-    g_tx_buffer[3] = localData.packageIndex;//? to deal
+    g_tx_buffer[3] = localData.packageIndex;//
     g_tx_buffer[4] = (localData.fanSpeed >> 8) & 0xFF;
     g_tx_buffer[5] = localData.fanSpeed & 0xFF;
     g_tx_buffer[6] = (localData.targetSpeed >> 8) & 0xFF;
@@ -230,6 +248,7 @@ void DataPackAndSend(void)
     g_tx_buffer[10] = (localData.crcresult >> 8) & 0xFF;
     g_tx_buffer[11] = localData.crcresult & 0xFF;
     //uart send g_tx_buffer
+    HAL_UART_Transmit_DMA(&huart1,g_tx_buffer,TX_BUFF_SIZE);
 }
 
 /* USER CODE END 4 */
