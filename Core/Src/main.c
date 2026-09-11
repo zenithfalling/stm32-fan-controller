@@ -47,8 +47,12 @@ typedef struct{
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 #define TX_BUFF_SIZE 12 //uart send data bytes
-#define UART_PERIOD 100 //uart send data period ms
+#define UART_PERIOD 20 //uart send data period ms
 #define OLED_PERIOD 50 //spi oled send data period ms
+#define PWM_MAX 2879
+#define PWM_MIN 0
+#define FANSPEED_MAX 5000 //record
+#define INTEGRAL_MAX 3548000 //error
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -65,11 +69,26 @@ uint16_t fanspeed = 0;
 uint32_t freq_tim4 = 1e6;// TIM4 frequency is 1MHz
 systemData_t dataField = {
     .packageIndex = 0,
-    .targetSpeed = 2500
+    .targetSpeed = 2000  //target speed
 };
 uint8_t g_tx_buffer[TX_BUFF_SIZE];
 uint32_t last_send_time = 0;
-uint8_t status = 0;
+HAL_StatusTypeDef status;
+uint16_t fanspeed_stored[5] = {0};
+uint16_t speed_count = 0;
+uint8_t i = 0;
+float_t fanspeed_sum = 0;
+float_t fanspeed_filter = 0;
+uint16_t fanspeed_index = 0;
+float_t kp = 0;
+float_t ki = 0;
+float_t kd = 0;
+float_t error_fanspeed[3] = {0};//0 1 2 present e(k-2) e(k-1) e(k)
+float_t delta_pwm = 0;
+float_t duty_value_new = 0;
+float_t error_fanspeed_sum = 0;
+float_t ts = 0.02; // tim3 period, influence PID parameter
+uint32_t wait_time = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -91,7 +110,9 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+    kp = 4.5;// 4.3
+    ki = 3.6;//14 or 15
+    kd = 15;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -127,6 +148,7 @@ int main(void)
   HAL_TIM_IC_Start_IT(&htim4,TIM_CHANNEL_1);
   HAL_GPIO_WritePin(GPIOF,GPIO_PIN_7,GPIO_PIN_RESET);
   last_send_time = HAL_GetTick();
+  wait_time = last_send_time;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -141,6 +163,10 @@ int main(void)
           HAL_GPIO_WritePin(GPIOF,GPIO_PIN_7,GPIO_PIN_SET);
           DataPackAndSend();
           HAL_GPIO_WritePin(GPIOF,GPIO_PIN_7,GPIO_PIN_RESET);
+      }
+      if(HAL_GetTick() - wait_time >= 8000)
+      {
+          dataField.targetSpeed = 3000;
       }
     /* USER CODE END WHILE */
 
@@ -194,16 +220,59 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if(htim->Instance == TIM3)
     {
-        // modify TIM2 PWM duty,will run PID algothrim in future
-        if(duty_value > 2879)
+        // moving average fan speed
+        if(speed_count < 5)
         {
-            duty_value = 0;
+            fanspeed_stored[speed_count] = dataField.fanSpeed;//risk? access the same time?
+            speed_count++;
+            fanspeed_sum = 0;
+            for(i = 0;i < speed_count;i++)
+            {
+                fanspeed_sum += fanspeed_stored[i];
+            }
+            fanspeed_filter = fanspeed_sum / speed_count;
         }
         else
         {
-            duty_value += 144;
+            fanspeed_stored[fanspeed_index % 5] = dataField.fanSpeed;
+            fanspeed_index++;
+            fanspeed_sum = 0;
+            for(i = 0;i < 5;i++)
+            {
+                fanspeed_sum += fanspeed_stored[i];
+            }
+            fanspeed_filter = fanspeed_sum / 5;
         }
-        __HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1,duty_value);
+        //PID algorithm,modify TIM2 PWM duty
+        error_fanspeed[2] = (float_t)dataField.targetSpeed - fanspeed_filter;
+        if(fabsf(error_fanspeed[2]) < 1000.0f)
+        {
+            error_fanspeed_sum += error_fanspeed[2];
+            if(error_fanspeed_sum > INTEGRAL_MAX)
+                error_fanspeed_sum = INTEGRAL_MAX;
+            if(error_fanspeed_sum < -INTEGRAL_MAX)
+                error_fanspeed_sum = -INTEGRAL_MAX;
+        }
+        else
+        {
+            error_fanspeed_sum = 0.0f;
+        }
+        //duty_value_new = kp * error_fanspeed[2];
+        duty_value_new = kp * error_fanspeed[2] + ki * error_fanspeed_sum * ts;
+        //duty_value_new = kp * error_fanspeed[2] + ki * (error_fanspeed[2] + error_fanspeed[1] + error_fanspeed[0]) *ts+ 
+        //            kd * (error_fanspeed[2] - error_fanspeed[1]) / ts;
+        if(duty_value_new < PWM_MIN)
+        {
+            duty_value_new = PWM_MIN;
+        }
+        else if(duty_value_new > PWM_MAX)
+        {
+            duty_value_new = PWM_MAX;
+        }
+        duty_value = (uint16_t)duty_value_new;
+        __HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1,duty_value);// change TIM2 PWM duty
+        error_fanspeed[0] = error_fanspeed[1];
+        error_fanspeed[1] = error_fanspeed[2];
     }
 }
 // TIM4 interrupt function
