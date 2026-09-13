@@ -27,6 +27,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "math.h"
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -36,6 +37,11 @@ typedef struct{
     uint16_t fanSpeed;
     uint16_t targetSpeed;
     uint32_t crcresult;
+    uint32_t timestamp;
+    uint16_t duty;
+    float_t P;
+    float_t I;
+    float_t D;
 }systemData_t;
 /* USER CODE END PTD */
 
@@ -47,6 +53,7 @@ typedef struct{
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 #define TX_BUFF_SIZE 12 //uart send data bytes
+#define TX_BUFF_DEBUG_SIZE 30 // debug uart send data bytes
 #define UART_PERIOD 20 //uart send data period ms
 #define OLED_PERIOD 50 //spi oled send data period ms
 #define PWM_MAX 2879
@@ -60,8 +67,8 @@ typedef struct{
 /* USER CODE BEGIN PV */
 extern CRC_HandleTypeDef hcrc;
 // now TIM2 frequency is 25kHz, counter period 2880
-uint16_t duty_value = 287;
-// 
+//uint16_t duty_value = 287;
+
 uint16_t ccr_reg_01 = 0;
 uint16_t ccr_reg_02 = 0;
 uint16_t dif_val = 0;
@@ -69,9 +76,16 @@ uint16_t fanspeed = 0;
 uint32_t freq_tim4 = 1e6;// TIM4 frequency is 1MHz
 systemData_t dataField = {
     .packageIndex = 0,
-    .targetSpeed = 2000  //target speed
+    .targetSpeed = 3000,  //target speed
+    .timestamp = 0,
+    .duty = 287,
+    .P = 0,
+    .I = 0,
+    .D = 0
 };
-uint8_t g_tx_buffer[TX_BUFF_SIZE];
+uint32_t primask_bit;
+//uint8_t g_tx_buffer[TX_BUFF_SIZE];
+uint8_t g_tx_buffer[TX_BUFF_DEBUG_SIZE];
 uint32_t last_send_time = 0;
 HAL_StatusTypeDef status;
 uint16_t fanspeed_stored[5] = {0};
@@ -83,18 +97,20 @@ uint16_t fanspeed_index = 0;
 float_t kp = 0;
 float_t ki = 0;
 float_t kd = 0;
-float_t error_fanspeed[3] = {0};//0 1 2 present e(k-2) e(k-1) e(k)
+float_t error_fanspeed = 0;//0 1 2 present e(k-2) e(k-1) e(k)
 float_t delta_pwm = 0;
 float_t duty_value_new = 0;
 float_t error_fanspeed_sum = 0;
 float_t ts = 0.02; // tim3 period, influence PID parameter
 uint32_t wait_time = 0;
+uint32_t raw_int,big_endian_int;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 void DataPackAndSend(void);
+void DataPackAndSendDebug(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -161,13 +177,15 @@ int main(void)
           last_send_time = HAL_GetTick();
           // use PF7 to measure function time
           HAL_GPIO_WritePin(GPIOF,GPIO_PIN_7,GPIO_PIN_SET);
-          DataPackAndSend();
+          //DataPackAndSend();
+          DataPackAndSendDebug();
           HAL_GPIO_WritePin(GPIOF,GPIO_PIN_7,GPIO_PIN_RESET);
       }
+      /*
       if(HAL_GetTick() - wait_time >= 8000)
       {
           dataField.targetSpeed = 3000;
-      }
+      }*/
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -221,6 +239,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     if(htim->Instance == TIM3)
     {
         // moving average fan speed
+        /*
         if(speed_count < 5)
         {
             fanspeed_stored[speed_count] = dataField.fanSpeed;//risk? access the same time?
@@ -242,12 +261,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
                 fanspeed_sum += fanspeed_stored[i];
             }
             fanspeed_filter = fanspeed_sum / 5;
-        }
+        }*/
         //PID algorithm,modify TIM2 PWM duty
-        error_fanspeed[2] = (float_t)dataField.targetSpeed - fanspeed_filter;
-        if(fabsf(error_fanspeed[2]) < 1000.0f)
+        //error_fanspeed = (float_t)dataField.targetSpeed - fanspeed_filter;
+        error_fanspeed = (float_t)dataField.targetSpeed - (float_t)dataField.fanSpeed;
+        if(fabsf(error_fanspeed) < 800.0f)
         {
-            error_fanspeed_sum += error_fanspeed[2];
+            error_fanspeed_sum += error_fanspeed;
             if(error_fanspeed_sum > INTEGRAL_MAX)
                 error_fanspeed_sum = INTEGRAL_MAX;
             if(error_fanspeed_sum < -INTEGRAL_MAX)
@@ -257,10 +277,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         {
             error_fanspeed_sum = 0.0f;
         }
-        //duty_value_new = kp * error_fanspeed[2];
-        duty_value_new = kp * error_fanspeed[2] + ki * error_fanspeed_sum * ts;
-        //duty_value_new = kp * error_fanspeed[2] + ki * (error_fanspeed[2] + error_fanspeed[1] + error_fanspeed[0]) *ts+ 
-        //            kd * (error_fanspeed[2] - error_fanspeed[1]) / ts;
+        dataField.P = kp * error_fanspeed;
+        dataField.I = ki * error_fanspeed_sum * ts;
+        duty_value_new = dataField.P;
+        //duty_value_new = dataField.P + dataField.I;
         if(duty_value_new < PWM_MIN)
         {
             duty_value_new = PWM_MIN;
@@ -269,10 +289,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         {
             duty_value_new = PWM_MAX;
         }
-        duty_value = (uint16_t)duty_value_new;
-        __HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1,duty_value);// change TIM2 PWM duty
-        error_fanspeed[0] = error_fanspeed[1];
-        error_fanspeed[1] = error_fanspeed[2];
+        dataField.duty = (uint16_t)duty_value_new;
+        __HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1,dataField.duty);// change TIM2 PWM duty
     }
 }
 // TIM4 interrupt function
@@ -294,7 +312,7 @@ void DataPackAndSend(void)
     systemData_t localData;
     uint32_t crcdata[2];
     // close interrupt
-    uint32_t primask_bit = __get_PRIMASK();
+    primask_bit = __get_PRIMASK();
     __disable_irq();
     localData = dataField;
     //open interrupt
@@ -320,6 +338,73 @@ void DataPackAndSend(void)
     HAL_UART_Transmit_DMA(&huart1,g_tx_buffer,TX_BUFF_SIZE);
 }
 
+void DataPackAndSendDebug(void)
+{
+    systemData_t localData;
+    uint32_t crcdata[7] = {0};
+    // close interrupt
+    primask_bit = __get_PRIMASK();
+    __disable_irq();
+    localData = dataField;
+    //open interrupt
+    __set_PRIMASK(primask_bit);
+    //data package
+    g_tx_buffer[0] = 0x55;//frame header
+    g_tx_buffer[1] = 0xAA;//frame header
+    g_tx_buffer[2] = TX_BUFF_DEBUG_SIZE - 2;//frame length except header
+    g_tx_buffer[3] = localData.packageIndex;//
+    g_tx_buffer[4] = (localData.fanSpeed >> 8) & 0xFF;
+    g_tx_buffer[5] = localData.fanSpeed & 0xFF;
+    g_tx_buffer[6] = (localData.targetSpeed >> 8) & 0xFF;
+    g_tx_buffer[7] = localData.targetSpeed & 0xFF;
+    g_tx_buffer[8] = (localData.duty >> 8) & 0xFF;
+    g_tx_buffer[9] = localData.duty & 0xFF;
+    // change to big-endian
+    memcpy(&raw_int, &localData.P, sizeof(float));
+    big_endian_int = __REV(raw_int);
+    memcpy(&g_tx_buffer[10], &big_endian_int, sizeof(float));
+    //g_tx_buffer[10] = (localData.P >> 24) & 0xFF;
+    //g_tx_buffer[11] = (localData.P >> 16) & 0xFF;
+    //g_tx_buffer[12] = (localData.P >> 8) & 0xFF;
+    //g_tx_buffer[13] = localData.P & 0xFF;
+    memcpy(&raw_int, &localData.I, sizeof(float));
+    big_endian_int = __REV(raw_int);
+    memcpy(&g_tx_buffer[14], &big_endian_int, sizeof(float));
+    //g_tx_buffer[14] = (localData.I >> 24) & 0xFF;
+    //g_tx_buffer[15] = (localData.I >> 16) & 0xFF;
+    //g_tx_buffer[16] = (localData.I >> 8) & 0xFF;
+    //g_tx_buffer[17] = localData.I & 0xFF;
+    memcpy(&raw_int, &localData.D, sizeof(float));
+    big_endian_int = __REV(raw_int);
+    memcpy(&g_tx_buffer[18], &big_endian_int, sizeof(float));
+    //g_tx_buffer[18] = (localData.D >> 24) & 0xFF;
+    //g_tx_buffer[19] = (localData.D >> 16) & 0xFF;
+    //g_tx_buffer[20] = (localData.D >> 8) & 0xFF;
+    //g_tx_buffer[21] = localData.D & 0xFF;
+    localData.timestamp = HAL_GetTick();
+    memcpy(&raw_int, &localData.timestamp, sizeof(float));
+    big_endian_int = __REV(raw_int);
+    memcpy(&g_tx_buffer[22], &big_endian_int, sizeof(float));
+    //g_tx_buffer[22] = (localData.timestamp >> 24 ) & 0xFF;
+    //g_tx_buffer[23] = (localData.timestamp >> 16 ) & 0xFF;
+    //g_tx_buffer[24] = (localData.timestamp >> 8 ) & 0xFF;
+    //g_tx_buffer[25] = localData.timestamp & 0xFF;
+    //calculate crc
+    crcdata[0] = (g_tx_buffer[0] << 24) | (g_tx_buffer[1] << 16) | (g_tx_buffer[2] << 8) | g_tx_buffer[3];
+    crcdata[1] = (g_tx_buffer[4] << 24) | (g_tx_buffer[5] << 16) | (g_tx_buffer[6] << 8) | g_tx_buffer[7];
+    crcdata[2] = (g_tx_buffer[8] << 24) | (g_tx_buffer[9] << 16) | (g_tx_buffer[10] << 8) | g_tx_buffer[11];
+    crcdata[3] = (g_tx_buffer[12] << 24) | (g_tx_buffer[13] << 16) | (g_tx_buffer[14] << 8) | g_tx_buffer[15];
+    crcdata[4] = (g_tx_buffer[16] << 24) | (g_tx_buffer[17] << 16) | (g_tx_buffer[18] << 8) | g_tx_buffer[19];
+    crcdata[5] = (g_tx_buffer[20] << 24) | (g_tx_buffer[21] << 16) | (g_tx_buffer[22] << 8) | g_tx_buffer[23];
+    crcdata[6] = (g_tx_buffer[24] << 24) | (g_tx_buffer[25] << 16) | 0x0000;
+    localData.crcresult = HAL_CRC_Calculate(&hcrc,crcdata,7);
+    g_tx_buffer[26] = (localData.crcresult >> 24) & 0xFF;
+    g_tx_buffer[27] = (localData.crcresult >> 16) & 0xFF;
+    g_tx_buffer[28] = (localData.crcresult >> 8) & 0xFF;
+    g_tx_buffer[29] = localData.crcresult & 0xFF;
+    //uart send g_tx_buffer
+    HAL_UART_Transmit_DMA(&huart1,g_tx_buffer,TX_BUFF_DEBUG_SIZE);
+}
 /* USER CODE END 4 */
 
 /**
